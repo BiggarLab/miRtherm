@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>miRtherm</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="mast">
+  <h1>miRtherm</h1>
+  <p>Which transcripts a microRNA can hold on to depends on how warm the cell is. Pick the temperatures and compare the target sets. Everything runs on this computer.</p>
+</header>
+
+<form id="setup" autocomplete="off">
+  <div class="bench">
+    <div class="field wide">
+      <label for="mirs">miRNA, mature sequence 5′ to 3′</label>
+      <textarea id="mirs" rows="3" spellcheck="false">&gt;dme-miR-956-3p
+TTTCGAGACCACTCTAATCCATT</textarea>
+    </div>
+
+    <div class="field">
+      <label for="utrfile">Target sequences, FASTA</label>
+      <input type="file" id="utrfile" accept=".fa,.fasta,.fna,.txt">
+      <p class="note" id="utrinfo">Nothing loaded yet. <button type="button" class="textlink" id="example">Load 400 fly 3′ UTRs</button></p>
+    </div>
+
+    <div class="field cut">
+      <label for="energy">Keep duplexes at or below</label>
+      <div class="inline"><input type="number" id="energy" value="-20" step="0.5"><span>kcal/mol</span></div>
+      <button type="button" class="textlink" id="more" aria-expanded="false" aria-controls="advanced">More settings</button>
+    </div>
+  </div>
+
+  <div class="advanced" id="advanced" hidden>
+    <div class="adv-group">
+      <h2>Other filters</h2>
+      <label>Alignment score at least <input type="number" id="score" placeholder="any"></label>
+      <label>Loop score at least <input type="number" id="loop" placeholder="any"></label>
+    </div>
+    <div class="adv-group">
+      <h2>Alignment weights</h2>
+      <label>A:U <input type="number" id="at" value="5"></label>
+      <label>G:C <input type="number" id="gc" value="5"></label>
+      <label>G:U <input type="number" id="gt" value="2"></label>
+      <label>Mismatch <input type="number" id="mis" value="-3"></label>
+      <label>Gap open <input type="number" id="go" value="-8"></label>
+      <label>Gap extend <input type="number" id="ge" value="-2"></label>
+    </div>
+    <div class="adv-group">
+      <h2>Folding</h2>
+      <label class="tick"><input type="checkbox" id="noLP"> No lonely pairs</label>
+      <label class="tick"><input type="checkbox" id="noGU"> No G:U pairs</label>
+      <label class="tick"><input type="checkbox" id="noCloseGU"> No G:U at helix ends</label>
+      <label>CPU threads <input type="number" id="threads" min="1" max="64"></label>
+    </div>
+  </div>
+
+  <div class="thermo">
+    <div class="thermo-head">
+      <label for="temps">Temperatures, °C</label>
+      <input type="text" id="temps" value="15, 25" inputmode="decimal" aria-describedby="thermohelp">
+      <span class="note" id="thermohelp">Click the scale to add one. Click a marker to remove it.</span>
+    </div>
+    <div class="scale" id="scale">
+      <div class="track" id="track"></div>
+      <div class="ticks" id="ticks" aria-hidden="true"></div>
+      <div class="pins" id="pins"></div>
+    </div>
+    <div class="go">
+      <button type="submit" id="run">Find targets</button>
+      <button type="button" id="cancel" hidden>Stop</button>
+      <span class="status" id="status" role="status"></span>
+    </div>
+    <div class="meter" id="meter" hidden><div id="meterfill"></div></div>
+    <p class="error" id="error" role="alert" hidden></p>
+  </div>
+</form>
+
+<main id="results" hidden>
+  <section class="overview">
+    <div class="tally" id="tally"></div>
+    <div class="lanes-wrap">
+      <h2>Duplex energy of the sites found, by temperature</h2>
+      <div class="lanes" id="lanes"></div>
+      <p class="note">Bars count sites per 1 kcal/mol. Click a bar to list those sites.</p>
+    </div>
+  </section>
+
+  <section class="sitelist">
+    <div class="toolbar">
+      <input type="search" id="search" placeholder="Transcript, gene or miRNA" aria-label="Filter sites by name">
+      <select id="show" aria-label="Which sites to list"></select>
+      <button type="button" class="chip" id="binchip" hidden></button>
+      <span class="count" id="count"></span>
+      <span class="spacer"></span>
+      <button type="button" id="csv">Download this table as CSV</button>
+    </div>
+    <div class="tablewrap">
+      <table class="sites" id="sites"><thead></thead><tbody></tbody></table>
+    </div>
+    <div class="pager">
+      <button type="button" id="prev">Previous</button>
+      <span id="pageinfo"></span>
+      <button type="button" id="next">Next</button>
+    </div>
+  </section>
+
+  <section class="duplexview" id="detail" hidden></section>
+</main>
+
+<div class="tip" id="tip" hidden></div>
+
+<footer>
+  <p>Duplex folding uses the cofold routine and energy parameters of the ViennaRNA Package 1.5 (Hofacker and colleagues, Institute for Theoretical Chemistry, University of Vienna).</p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
