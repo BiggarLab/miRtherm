@@ -1,25 +1,21 @@
 # miRtherm
 
 microRNA target prediction with duplex free energy calculated at a chosen
-temperature, for asking how a miRNA's target set changes between, say, 15 and
-25 °C. One C++ core, two front ends:
+temperature. There are two optional user interfaces:
 
 * a browser dashboard (`docs/`) that runs entirely on the user's computer
-  through WebAssembly and can be served from GitHub Pages
+  through WebAssembly
 * a command line program (`mirtherm`)
 
 ## Dashboard
 
 Enter one or more mature miRNA sequences, choose a FASTA file of target
 sequences (3' UTRs), set the temperatures on the scale and press "Find
-targets". Sequences are processed locally and never uploaded. The page shows
+targets". Sequences are processed locally. The page shows
 how many transcripts are targeted at each temperature, the distribution of
 duplex energies, a sortable site table and the duplex at each temperature.
 Each temperature can be downloaded in the command line output format, and the
 site table as CSV.
-
-To publish: push this repository to GitHub, then under Settings, Pages choose
-"Deploy from a branch", branch `main`, folder `/docs`.
 
 To try it locally: `cd docs && python3 -m http.server`, then open
 http://localhost:8000. Opening `index.html` straight from disk does not work
@@ -74,5 +70,3 @@ use and modification, provided the package and derived works are not
 redistributed for a fee and credit is given. That condition applies to this
 repository as a whole.
 
-The dashboard fonts, Bricolage Grotesque and Martian Mono, are under the SIL
-Open Font License (`docs/fonts/LICENSES.txt`).
