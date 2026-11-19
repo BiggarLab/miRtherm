@@ -14,24 +14,34 @@
 </header>
 
 <form id="setup" autocomplete="off">
-  <div class="bench">
-    <div class="field wide">
-      <label for="mirs">miRNA, mature sequence 5′ to 3′</label>
-      <textarea id="mirs" rows="3" spellcheck="false">&gt;dme-miR-956-3p
+  <div class="inputs">
+    <div class="seqin" id="mirbox">
+      <label for="mirs">miRNA sequences</label>
+      <textarea id="mirs" rows="7" spellcheck="false" placeholder="&gt;name&#10;UGAGGUAGUAGGUUGUAUAGUU&#10;&#10;Paste one or more mature sequences in FASTA format, 5′ to 3′">&gt;dme-miR-956-3p
 TTTCGAGACCACTCTAATCCATT</textarea>
+      <div class="filechip" id="mirchip" hidden><span id="mirchiptext"></span><button type="button" id="mirclear">Remove file</button></div>
+      <div class="seqbar">
+        <label class="upload"><input type="file" id="mirfile" accept=".fa,.fasta,.fna,.txt">Upload FASTA file</label>
+        <span class="note" id="mirinfo"></span>
+      </div>
     </div>
 
-    <div class="field">
-      <label for="utrfile">Target sequences, FASTA</label>
-      <input type="file" id="utrfile" accept=".fa,.fasta,.fna,.txt">
-      <p class="note" id="utrinfo">Nothing loaded yet. <button type="button" class="textlink" id="example">Load 400 fly 3′ UTRs</button></p>
+    <div class="seqin" id="utrbox">
+      <label for="utrs">Target sequences</label>
+      <textarea id="utrs" rows="7" spellcheck="false" placeholder="&gt;transcript name&#10;ACGT...&#10;&#10;Paste 3′ UTR sequences in FASTA format, or upload a file"></textarea>
+      <div class="filechip" id="utrchip" hidden><span id="utrchiptext"></span><button type="button" id="utrclear">Remove file</button></div>
+      <div class="seqbar">
+        <label class="upload"><input type="file" id="utrfile" accept=".fa,.fasta,.fna,.txt">Upload FASTA file</label>
+        <button type="button" class="textlink" id="example">Use 400 fly 3′ UTRs</button>
+        <span class="note" id="utrinfo"></span>
+      </div>
     </div>
+  </div>
 
-    <div class="field cut">
-      <label for="energy">Keep duplexes at or below</label>
-      <div class="inline"><input type="number" id="energy" value="-20" step="0.5"><span>kcal/mol</span></div>
-      <button type="button" class="textlink" id="more" aria-expanded="false" aria-controls="advanced">More settings</button>
-    </div>
+  <div class="cutrow">
+    <label for="energy">Keep duplexes at or below</label>
+    <input type="number" id="energy" value="-20" step="0.5"><span class="note">kcal/mol</span>
+    <button type="button" class="textlink" id="more" aria-expanded="false" aria-controls="advanced">More settings</button>
   </div>
 
   <div class="advanced" id="advanced" hidden>
@@ -80,6 +90,22 @@ TTTCGAGACCACTCTAATCCATT</textarea>
 </form>
 
 <main id="results" hidden>
+  <section class="batch" id="batch" hidden>
+    <div class="toolbar">
+      <h2>Results by miRNA</h2>
+      <span class="count" id="batchcount"></span>
+      <span class="spacer"></span>
+      <button type="button" id="zip">Download all output files (.zip)</button>
+      <button type="button" id="sumcsv">Download this summary as CSV</button>
+    </div>
+    <div class="tablewrap batchwrap">
+      <table class="sites" id="batchtable"><thead></thead><tbody></tbody></table>
+    </div>
+    <p class="note">Click a finished miRNA to see its sites.</p>
+  </section>
+
+  <div id="one" hidden>
+  <h2 class="onetitle" id="onetitle"></h2>
   <section class="overview">
     <div class="tally" id="tally"></div>
     <div class="lanes-wrap">
@@ -91,7 +117,7 @@ TTTCGAGACCACTCTAATCCATT</textarea>
 
   <section class="sitelist">
     <div class="toolbar">
-      <input type="search" id="search" placeholder="Transcript, gene or miRNA" aria-label="Filter sites by name">
+      <input type="search" id="search" placeholder="Transcript or gene" aria-label="Filter sites by name">
       <select id="show" aria-label="Which sites to list"></select>
       <button type="button" class="chip" id="binchip" hidden></button>
       <span class="count" id="count"></span>
@@ -109,6 +135,7 @@ TTTCGAGACCACTCTAATCCATT</textarea>
   </section>
 
   <section class="duplexview" id="detail" hidden></section>
+  </div>
 </main>
 
 <div class="tip" id="tip" hidden></div>

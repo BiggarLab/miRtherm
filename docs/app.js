@@ -8,13 +8,14 @@ const SCALE_MIN = -5, SCALE_MAX = 50;
 const COLD = [74, 79, 196], MID = [184, 65, 138], WARM = [224, 112, 31];
 
 const state = {
-  utrs: null,
-  utrLabel: '',
-  run: null,     // {temps, mirs, text, rows, cutoff}
+  input: { mir: null, utr: null },   // parsed records when a file is loaded instead of pasted text
+  run: null,     // {temps, cutoff, utrs, mirs: [{id, seq, name, status, stats, files}]}
+  detail: null,  // {mi, rows} for the miRNA currently shown
   view: { rows: [], page: 0, sort: 'e0', dir: 1, sel: null, bin: null },
   workers: [],
   cancelled: false,
 };
+const PASTE_LIMIT = 200000;   // larger files are kept out of the text box
 
 // ---------- input parsing ----------
 
@@ -37,33 +38,74 @@ function parseFasta(text) {
   return out;
 }
 
-function parseMirs(text) {
+function mirRecords(text) {
   let mirs;
   if (text.includes('>')) mirs = parseFasta(text);
-  else mirs = text.split(/\s+/).filter(Boolean).map((s, i) => ({ id: 'miRNA-' + (i + 1), seq: s.toUpperCase() }));
-  mirs = mirs.filter((m) => m.seq.length);
+  else mirs = text.split(/\s+/).filter(Boolean).map((q, i) => ({ id: 'miRNA-' + (i + 1), seq: q.toUpperCase() }));
+  for (const m of mirs) m.seq = m.seq.replace(/\s+/g, '');
+  return mirs.filter((m) => m.seq.length);
+}
+
+function checkMirs(mirs) {
   if (!mirs.length) throw new Error('Enter at least one miRNA sequence.');
   for (const m of mirs) {
-    m.seq = m.seq.replace(/\s+/g, '');
-    if (!/^[ACGTU]+$/.test(m.seq)) throw new Error(`“${m.id}” has characters other than A, C, G, T or U.`);
-    if (m.seq.length < 9 || m.seq.length > 56) throw new Error(`“${m.id}” is ${m.seq.length} nt long. miRNAs must be 9 to 56 nt.`);
+    if (!/^[ACGTU]+$/.test(m.seq)) throw new Error(`miRNA “${m.id}” has characters other than A, C, G, T or U.`);
+    if (m.seq.length < 9 || m.seq.length > 56) throw new Error(`miRNA “${m.id}” is ${m.seq.length} nt long. miRNAs must be 9 to 56 nt.`);
   }
   return mirs;
 }
 
-function setUtrs(text, label) {
+function utrRecords(text) {
   const utrs = parseFasta(text);
-  if (!utrs.length) throw new Error('No FASTA records found in that file.');
   for (const u of utrs) {
     u.seq = u.seq.replace(/\s+/g, '');
     u.name = u.id.split(/\s+/)[0] || u.id;
     const g = /(?:parent|gene|gene_id|gene_symbol)[=:]([^;\s,]+)/i.exec(u.id);
     u.gene = g ? g[1] : '';
   }
-  state.utrs = utrs;
-  state.utrLabel = label;
-  const nt = utrs.reduce((a, u) => a + u.seq.length, 0);
-  $('utrinfo').textContent = `${label}: ${utrs.length.toLocaleString()} sequences, ${(nt / 1e6).toFixed(2)} Mb.`;
+  return utrs;
+}
+
+const getMirs = () => checkMirs(state.input.mir ? state.input.mir.records : mirRecords($('mirs').value));
+function getUtrs() {
+  const utrs = state.input.utr ? state.input.utr.records : utrRecords($('utrs').value);
+  if (!utrs.length) throw new Error('Paste target sequences in FASTA format, or upload a file.');
+  return utrs;
+}
+
+// Each sequence input is a paste box that turns into a file summary when a
+// large file is loaded.
+function showInput(kind) {
+  const f = state.input[kind];
+  const box = $(kind === 'mir' ? 'mirs' : 'utrs');
+  $(kind + 'chip').hidden = !f;
+  box.hidden = !!f;
+  const info = $(kind + 'info');
+  info.classList.remove('bad');
+  let recs;
+  if (f) {
+    $(kind + 'chiptext').textContent = f.label;
+    recs = f.records;
+  } else {
+    recs = kind === 'mir' ? mirRecords(box.value) : utrRecords(box.value);
+  }
+  if (!recs.length) { info.textContent = ''; return; }
+  const nt = recs.reduce((a, r) => a + r.seq.length, 0);
+  info.textContent = `${recs.length.toLocaleString()} sequence${recs.length === 1 ? '' : 's'}` +
+    (kind === 'utr' ? `, ${nt >= 1e6 ? (nt / 1e6).toFixed(2) + ' Mb' : nt.toLocaleString() + ' nt'}` : '');
+  if (kind === 'mir' && recs.length > 100) info.textContent += '. A batch this size can take a long time in the browser.';
+}
+
+function loadText(kind, text, label) {
+  const recs = kind === 'mir' ? mirRecords(text) : utrRecords(text);
+  if (!recs.length) throw new Error(`No FASTA records found in ${label}.`);
+  if (text.length <= PASTE_LIMIT) {
+    state.input[kind] = null;
+    $(kind === 'mir' ? 'mirs' : 'utrs').value = text;
+  } else {
+    state.input[kind] = { label, records: recs };
+  }
+  showInput(kind);
 }
 
 function readTemps() {
@@ -153,6 +195,15 @@ function makePool(n) {
       for (const w of workers) w.terminate();
       state.workers = [];
     },
+    // Stop everything; calls still waiting for a worker fail with this error.
+    abort() {
+      this.close();
+      const err = new Error('Stopped.');
+      for (const j of pending.values()) j.reject(err);
+      for (const j of queue) j.reject(err);
+      pending.clear();
+      queue.length = 0;
+    },
   };
 }
 
@@ -180,68 +231,191 @@ function progress(frac, msg) {
 }
 
 async function runAll() {
-  const mirs = parseMirs($('mirs').value);
-  if (!state.utrs) throw new Error('Choose a FASTA file of target sequences first.');
+  const mirList = getMirs();
+  const utrs = getUtrs();
   const { temps, base, threads } = readSettings();
-  const utrs = state.utrs;
-  const pool = makePool(threads);
+  const names = new Set();
+  const mirs = mirList.map((m) => {
+    let name = (m.id.split(/\s+/)[0] || 'miRNA').replace(/[^\w.+-]+/g, '_'), k = 2;
+    const stem = name;
+    while (names.has(name)) name = stem + '_' + k++;
+    names.add(name);
+    return { id: m.id, seq: m.seq, name, status: 'queued', stats: null, files: [] };
+  });
+  state.run = { temps, cutoff: base.energy, utrs, mirs };
+  state.detail = null;
   state.cancelled = false;
+  $('results').hidden = false;
+  $('one').hidden = true;
+  renderBatch();
+
+  const pool = makePool(threads);
+  state.pool = pool;
   const chunks = chunkUtrs(utrs);
-  const total = chunks.length * temps.length;
-  let done = 0;
+  const total = chunks.length * temps.length * mirs.length;
+  let done = 0, skippedAll = 0;
   const t0 = performance.now();
-  const text = [], blocksByTemp = [], skipped = new Set();
   progress(0, 'Starting');
   try {
-    for (const T of temps) {
-      const cfg = Object.assign({ temperature: T }, base);
-      const header = (await pool.post({ type: 'header', cfg })).header;
-      const blocks = new Array(utrs.length);
-      await Promise.all(chunks.map(async ([a, b]) => {
-        const res = await pool.post({ type: 'scan', cfg, mirs, utrs: utrs.slice(a, b).map((u) => u.seq) });
-        for (let i = a; i < b; i++) {
-          if (res.out[i - a] === null) skipped.add(i);
-          blocks[i] = res.out[i - a] || '';
-        }
-        done++;
-        const left = (performance.now() - t0) / 1000 / done * (total - done);
-        progress(done / total, `Folding at ${T} °C, about ${Math.ceil(left)} s left`);
-      }));
-      blocksByTemp.push(blocks);
-      // Same layout as the command line output file.
-      text.push(header + utrs.map((u, i) => u.id + '\n' + blocks[i]).join('\n'));
+    for (let mi = 0; mi < mirs.length; mi++) {
+      const M = mirs[mi];
+      M.status = 'running';
+      renderBatch();
+      const blocksByTemp = [];
+      const skipped = new Set();
+      for (const T of temps) {
+        const cfg = Object.assign({ temperature: T }, base);
+        const header = (await pool.post({ type: 'header', cfg })).header;
+        const blocks = new Array(utrs.length);
+        await Promise.all(chunks.map(async ([a, b]) => {
+          const res = await pool.post({ type: 'scan', cfg, mirs: [{ id: M.id, seq: M.seq }], utrs: utrs.slice(a, b).map((u) => u.seq) });
+          for (let i = a; i < b; i++) {
+            if (res.out[i - a] === null) skipped.add(i);
+            blocks[i] = res.out[i - a] || '';
+          }
+          done++;
+          const left = (performance.now() - t0) / 1000 / done * (total - done);
+          const eta = left > 90 ? `about ${Math.ceil(left / 60)} min left` : `about ${Math.ceil(left)} s left`;
+          progress(done / total, (mirs.length > 1 ? `miRNA ${mi + 1} of ${mirs.length}, ` : '') + `folding at ${T} °C, ${eta}`);
+        }));
+        blocksByTemp.push(blocks);
+        // Same layout as the command line output file.
+        M.files.push(await packFile(`${M.name}-${T}C.txt`, header + utrs.map((u, i) => u.id + '\n' + blocks[i]).join('\n')));
+      }
+      M.stats = statsOf(blocksByTemp);
+      M.status = 'done';
+      skippedAll += skipped.size;
+      renderBatch();
+      if (!state.detail) openMir(mi, false);
     }
   } finally {
     pool.close();
+    for (const M of mirs) if (M.status !== 'done') M.status = state.cancelled ? 'stopped' : 'failed';
+    renderBatch();
   }
-  if (state.cancelled) return;
   const secs = (performance.now() - t0) / 1000;
-  state.run = { temps, mirs, text, rows: mergeRows(blocksByTemp), cutoff: base.energy };
-  progress(1, `Done in ${secs.toFixed(1)} s on ${threads} thread${threads > 1 ? 's' : ''}.` +
-    (skipped.size ? ` Skipped ${skipped.size} sequence${skipped.size > 1 ? 's' : ''} with characters other than A, C, G, T or U.` : ''));
-  renderResults();
+  progress(1, `Done in ${secs > 90 ? (secs / 60).toFixed(1) + ' min' : secs.toFixed(1) + ' s'} on ${threads} thread${threads > 1 ? 's' : ''}.` +
+    (skippedAll ? ` Skipped ${skippedAll} target sequence${skippedAll > 1 ? 's' : ''} with characters other than A, C, G, T or U.` : ''));
 }
 
-// One row per site (transcript, miRNA, end position) with a slot per temperature.
-function mergeRows(blocksByTemp) {
+// Counts for the summary table, taken straight from the per-UTR result blocks.
+function statsOf(blocksByTemp) {
+  const n = blocksByTemp.length;
+  const sites = [], tx = [];
+  for (const blocks of blocksByTemp) {
+    let s = 0, t = 0;
+    for (const blk of blocks) if (blk) { t++; for (let i = 0; i < blk.length; i++) if (blk.charCodeAt(i) === 10) s++; }
+    sites.push(s);
+    tx.push(t);
+  }
+  let lost = 0, kept = 0, gained = 0;
+  if (n >= 2) {
+    const A = blocksByTemp[0], B = blocksByTemp[n - 1];
+    for (let i = 0; i < A.length; i++) {
+      if (A[i] && B[i]) kept++;
+      else if (A[i]) lost++;
+      else if (B[i]) gained++;
+    }
+  }
+  return { sites, tx, lost, kept, gained };
+}
+
+// ---------- result files (kept compressed) and zip ----------
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(bytes) {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+async function packFile(name, text) {
+  const bytes = new TextEncoder().encode(text);
+  const file = { name, crc: crc32(bytes), size: bytes.length, method: 0, blob: null };
+  if (typeof CompressionStream === 'function') {
+    try {
+      file.blob = await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'))).blob();
+      file.method = 8;
+    } catch (e) { file.blob = null; }
+  }
+  if (!file.blob) file.blob = new Blob([bytes]);
+  return file;
+}
+
+function unpackFile(file) {
+  if (file.method === 0) return file.blob.text();
+  return new Response(file.blob.stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();
+}
+
+function zipBlob(files) {
+  const enc = new TextEncoder();
+  const d = new Date();
+  const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+  const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  const parts = [], central = [];
+  let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name);
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true);
+    lh.setUint16(8, f.method, true); lh.setUint16(10, time, true); lh.setUint16(12, date, true);
+    lh.setUint32(14, f.crc, true); lh.setUint32(18, f.blob.size, true); lh.setUint32(22, f.size, true);
+    lh.setUint16(26, name.length, true); lh.setUint16(28, 0, true);
+    parts.push(lh.buffer, name, f.blob);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true);
+    ch.setUint16(10, f.method, true); ch.setUint16(12, time, true); ch.setUint16(14, date, true);
+    ch.setUint32(16, f.crc, true); ch.setUint32(20, f.blob.size, true); ch.setUint32(24, f.size, true);
+    ch.setUint16(28, name.length, true); ch.setUint32(42, offset, true);
+    central.push(ch.buffer, name);
+    offset += 30 + name.length + f.blob.size;
+  }
+  const cdSize = central.reduce((a, p) => a + p.byteLength, 0);
+  if (files.length > 65535 || offset + cdSize > 0xffffffff) throw new Error('The results are too large for one zip file. Download them per miRNA instead.');
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
+  end.setUint32(12, cdSize, true); end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, end.buffer], { type: 'application/zip' });
+}
+
+// Read an output file back into site rows. `map` collects one row per site
+// (transcript and end position) with a slot per temperature.
+function parseOutput(text, ti, map) {
+  const lines = text.split('\n');
+  let i = 0;
+  while (i < lines.length && lines[i][0] === '#') i++;
+  let ui = -1, expectId = true;
+  for (; i < lines.length; i++) {
+    const line = lines[i];
+    if (expectId) { ui++; expectId = false; continue; }
+    if (line === '') { expectId = true; continue; }
+    const f = line.split('\t');
+    const key = ui + '|' + f[4];
+    let row = map.get(key);
+    if (!row) {
+      row = { u: ui, mir: f[0], start: +f[3], end: +f[4], score: +f[1], dyn: f[5], seedScore: +f[7], at: [] };
+      map.set(key, row);
+    }
+    row.at[ti] = { energy: +f[2], aln: f[6], seedEnergy: +f[8], loop: f[9], structure: f[10] };
+  }
+}
+
+async function openMir(mi, scroll) {
+  const M = state.run.mirs[mi];
+  if (!M || M.status !== 'done') return;
   const map = new Map();
-  blocksByTemp.forEach((blocks, ti) => {
-    blocks.forEach((blk, ui) => {
-      if (!blk) return;
-      for (const line of blk.split('\n')) {
-        if (!line) continue;
-        const f = line.split('\t');
-        const key = ui + '|' + f[0] + '|' + f[4];
-        let row = map.get(key);
-        if (!row) {
-          row = { u: ui, mir: f[0], start: +f[3], end: +f[4], score: +f[1], dyn: f[5], seedScore: +f[7], at: [] };
-          map.set(key, row);
-        }
-        row.at[ti] = { energy: +f[2], aln: f[6], seedEnergy: +f[8], loop: f[9], structure: f[10] };
-      }
-    });
-  });
-  return [...map.values()];
+  for (let ti = 0; ti < M.files.length; ti++) parseOutput(await unpackFile(M.files[ti]), ti, map);
+  state.detail = { mi, rows: [...map.values()] };
+  renderResults(scroll);
+  renderBatch();
 }
 
 // ---------- rendering ----------
@@ -260,10 +434,47 @@ const deg = (t) => `${t} °C`;
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const minus = (x) => String(x).replace('-', '−');
 
-function renderResults() {
-  const { temps, rows } = state.run;
-  const utrs = state.utrs;
+function summaryCols() {
+  const { temps } = state.run;
+  const cols = [{ label: 'miRNA', text: true, get: (M) => M.name }];
+  temps.forEach((T, i) => cols.push({ label: `Transcripts at ${deg(T)}`, get: (M) => M.stats.tx[i] }));
+  temps.forEach((T, i) => cols.push({ label: `Sites at ${deg(T)}`, get: (M) => M.stats.sites[i] }));
+  if (temps.length >= 2) {
+    cols.push({ label: 'Drop out on warming', get: (M) => M.stats.lost });
+    cols.push({ label: 'Stay', get: (M) => M.stats.kept });
+    cols.push({ label: 'Appear', get: (M) => M.stats.gained });
+  }
+  return cols;
+}
+
+// Summary table, one row per miRNA. Only shown for batches.
+function renderBatch() {
+  const { mirs } = state.run;
+  const sec = $('batch');
+  sec.hidden = mirs.length < 2;
+  if (sec.hidden) return;
+  const cols = summaryCols();
+  const tbl = $('batchtable');
+  tbl.querySelector('thead').innerHTML = '<tr>' + cols.map((c) => `<th scope="col"${c.text ? ' class="t"' : ''}>${esc(c.label)}</th>`).join('') + '</tr>';
+  const words = { queued: 'waiting', running: 'running', stopped: 'stopped', failed: 'failed' };
+  tbl.querySelector('tbody').innerHTML = mirs.map((M, i) => {
+    if (M.status !== 'done')
+      return `<tr class="wait"><td class="t">${esc(M.name)}</td><td class="t" colspan="${cols.length - 1}">${words[M.status]}</td></tr>`;
+    return `<tr data-mi="${i}"${state.detail && state.detail.mi === i ? ' class="sel"' : ''}>` +
+      cols.map((c) => `<td${c.text ? ' class="t"' : ''}>${c.text ? esc(c.get(M)) : c.get(M).toLocaleString()}</td>`).join('') + '</tr>';
+  }).join('');
+  const nd = mirs.filter((M) => M.status === 'done').length;
+  $('batchcount').textContent = `${nd} of ${mirs.length} finished`;
+  $('zip').disabled = $('sumcsv').disabled = nd === 0;
+}
+
+function renderResults(scroll) {
+  const { temps, utrs, mirs } = state.run;
+  const rows = state.detail.rows;
   $('results').hidden = false;
+  $('one').hidden = false;
+  $('onetitle').textContent = mirs.length > 1 ? mirs[state.detail.mi].id : '';
+  $('onetitle').hidden = mirs.length < 2;
   const n = temps.length;
 
   // tally
@@ -299,7 +510,6 @@ function renderResults() {
   state.cols = [
     { k: 'name', label: 'Transcript', text: true, get: (r) => utrs[r.u].name },
     ...(hasGene ? [{ k: 'gene', label: 'Gene', text: true, get: (r) => utrs[r.u].gene }] : []),
-    ...(state.run.mirs.length > 1 ? [{ k: 'mir', label: 'miRNA', text: true, get: (r) => r.mir }] : []),
     { k: 'start', label: 'Start', get: (r) => r.start },
     { k: 'end', label: 'End', get: (r) => r.end },
     ...temps.map((T, i) => ({ k: 'e' + i, label: `ΔG at ${deg(T)}`, energy: i, get: (r) => (r.at[i] ? r.at[i].energy : null) })),
@@ -311,13 +521,15 @@ function renderResults() {
   $('search').value = '';
   $('detail').hidden = true;
   applyView();
-  $('results').scrollIntoView({ block: 'start', behavior: 'smooth' });
+  if (scroll !== false) $('one').scrollIntoView({ block: 'start', behavior: 'smooth' });
+  else if (mirs.length < 2) $('results').scrollIntoView({ block: 'start', behavior: 'smooth' });
 }
 
 // Small multiples: one horizontal histogram of site energies per temperature,
 // sharing both axes so lanes can be compared directly.
 function drawLanes() {
-  const { temps, rows } = state.run;
+  const { temps } = state.run;
+  const rows = state.detail.rows;
   const n = temps.length;
   let lo = Infinity, hi = -Infinity;
   for (const r of rows) for (const s of r.at) if (s) { lo = Math.min(lo, s.energy); hi = Math.max(hi, s.energy); }
@@ -357,8 +569,8 @@ function drawLanes() {
 }
 
 function applyView() {
-  const { rows, temps } = state.run;
-  const utrs = state.utrs, v = state.view;
+  const { temps, utrs } = state.run;
+  const rows = state.detail.rows, v = state.view;
   const q = $('search').value.trim().toLowerCase();
   const show = $('show').value || 'all';
   const out = rows.filter((r) => {
@@ -371,7 +583,7 @@ function applyView() {
       const s = r.at[v.bin.t];
       if (!s || s.energy > v.bin.hi || s.energy <= v.bin.lo) return false;
     }
-    if (q && !(utrs[r.u].id.toLowerCase().includes(q) || r.mir.toLowerCase().includes(q))) return false;
+    if (q && !utrs[r.u].id.toLowerCase().includes(q)) return false;
     return true;
   });
   const col = state.cols.find((c) => c.k === v.sort);
@@ -434,7 +646,7 @@ function duplexHtml(aln, tint) {
 
 function renderDetail(r) {
   const { temps } = state.run;
-  const n = temps.length, u = state.utrs[r.u];
+  const n = temps.length, u = state.run.utrs[r.u];
   let h = `<h2>${esc(r.mir)} on ${esc(u.name)}, nucleotides ${r.start} to ${r.end}</h2><p class="where">${esc(u.id)}</p><div class="duplexes">`;
   temps.forEach((T, i) => {
     const s = r.at[i];
@@ -453,7 +665,11 @@ function renderDetail(r) {
 // ---------- downloads ----------
 
 function download(name, text, type) {
-  const url = URL.createObjectURL(new Blob([text], { type: type || 'text/plain' }));
+  downloadBlob(name, new Blob([text], { type: type || 'text/plain' }));
+}
+
+function downloadBlob(name, blob) {
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = name;
@@ -470,7 +686,7 @@ function csvOf(rows) {
     ...temps.flatMap((T) => [`energy_${T}C`, `seed_energy_${T}C`, `loop_${T}C`, `alignment_${T}C`, `structure_${T}C`]),
     'sequence_alignment', 'target_id'].join(',')];
   for (const r of rows) {
-    const u = state.utrs[r.u];
+    const u = state.run.utrs[r.u];
     const cells = [q(u.name), q(u.gene), q(r.mir), r.start, r.end, r.score, r.seedScore];
     temps.forEach((T, i) => {
       const s = r.at[i];
@@ -510,19 +726,27 @@ $('more').addEventListener('click', () => {
   $('more').textContent = adv.hidden ? 'More settings' : 'Fewer settings';
 });
 
-$('utrfile').addEventListener('change', async (e) => {
-  const f = e.target.files[0];
-  if (!f) return;
-  $('error').hidden = true;
-  try { setUtrs(await f.text(), f.name); } catch (err) { fail(err); }
-});
+for (const kind of ['mir', 'utr']) {
+  $(kind + 'file').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    $('error').hidden = true;
+    try { loadText(kind, await f.text(), f.name); } catch (err) { fail(err); }
+  });
+  $(kind + 'clear').addEventListener('click', () => { state.input[kind] = null; showInput(kind); });
+  $(kind === 'mir' ? 'mirs' : 'utrs').addEventListener('input', () => showInput(kind));
+  showInput(kind);
+}
 
 $('example').addEventListener('click', async () => {
   $('error').hidden = true;
   try {
     const res = await fetch('example_utrs.fasta');
     if (!res.ok) throw new Error('Could not load the example sequences.');
-    setUtrs(await res.text(), 'Fly example');
+    const text = await res.text();
+    state.input.utr = { label: 'Fly example, 400 3′ UTRs', records: utrRecords(text) };
+    showInput('utr');
   } catch (err) { fail(err); }
 });
 
@@ -543,19 +767,38 @@ $('setup').addEventListener('submit', async (e) => {
 
 $('cancel').addEventListener('click', () => {
   state.cancelled = true;
-  for (const w of state.workers) w.terminate();
-  state.workers = [];
-  $('run').disabled = false;
-  $('cancel').hidden = true;
-  progress(0, 'Stopped.');
+  if (state.pool) state.pool.abort();
+  progress(0, 'Stopped. Finished miRNAs are kept.');
 });
 
-$('tally').addEventListener('click', (e) => {
+$('tally').addEventListener('click', async (e) => {
   const ti = e.target.dataset.dl;
   if (ti === undefined) return;
-  const T = state.run.temps[+ti];
-  const mir = state.run.mirs.length === 1 ? state.run.mirs[0].id.split(/\s+/)[0].replace(/[^\w.-]+/g, '_') : 'targets';
-  download(`${mir}-${T}.txt`, state.run.text[+ti]);
+  const f = state.run.mirs[state.detail.mi].files[+ti];
+  download(f.name, await unpackFile(f));
+});
+
+$('batchtable').querySelector('tbody').addEventListener('click', (e) => {
+  const tr = e.target.closest('tr[data-mi]');
+  if (tr) openMir(+tr.dataset.mi, true);
+});
+
+function summaryCsv() {
+  const cols = summaryCols();
+  const q = (v) => '"' + String(v).replace(/"/g, '""') + '"';
+  const lines = [['mirna_id', 'sequence', ...cols.slice(1).map((c) => c.label)].map(q).join(',')];
+  for (const M of state.run.mirs) if (M.status === 'done')
+    lines.push([q(M.id), M.seq, ...cols.slice(1).map((c) => c.get(M))].join(','));
+  return lines.join('\n') + '\n';
+}
+
+$('sumcsv').addEventListener('click', () => download('mirtherm-summary.csv', summaryCsv(), 'text/csv'));
+$('zip').addEventListener('click', async () => {
+  try {
+    const files = state.run.mirs.filter((M) => M.status === 'done').flatMap((M) => M.files);
+    files.push(await packFile('summary.csv', summaryCsv()));
+    downloadBlob('mirtherm-results.zip', zipBlob(files));
+  } catch (err) { fail(err); }
 });
 
 const tip = $('tip');

@@ -17,6 +17,12 @@ duplex energies, a sortable site table and the duplex at each temperature.
 Each temperature can be downloaded in the command line output format, and the
 site table as CSV.
 
+miRNA and target sequences can be pasted or uploaded as FASTA files. With
+several miRNAs the page adds a summary table, one row per miRNA, that fills in
+as each one finishes; click a row to see that miRNA's sites. All output files
+can be downloaded together as a zip. Batches run one miRNA after another, and
+a batch of several hundred is better suited to the command line program.
+
 To try it locally: `cd docs && python3 -m http.server`, then open
 http://localhost:8000. Opening `index.html` straight from disk does not work
 because browsers block Web Workers on `file://` pages.
